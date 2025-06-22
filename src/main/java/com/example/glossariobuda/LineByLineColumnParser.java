@@ -251,6 +251,7 @@ public class LineByLineColumnParser {
         return (first >= 'a' && first <= 'z');
     }
     
+
     private static boolean containsTibetan(String text) {
         for (char c : text.toCharArray()) {
             if (c >= '\u0F00' && c <= '\u0FFF') {
@@ -258,5 +259,46 @@ public class LineByLineColumnParser {
             }
         }
         return false;
+    }
+
+    private static boolean containsCompletionMarker(String text) {
+        // Check for common Tibetan completion patterns
+        return text.contains("རྐྱེན།") ||
+                text.contains("་རྐྱེན།") ||
+                text.matches(".*[\\u0F00-\\u0FFF]+།.*"); // Any Tibetan ending with །
+    }
+
+    private static String extractCompletionPart(String text) {
+        String cleanText = text.trim();
+
+        // Method 1: Extract རྐྱེན། completion
+        if (cleanText.contains("རྐྱེན།")) {
+            int rkyenIndex = cleanText.indexOf("རྐྱེན།");
+            // Look backwards for the start of the completion
+            int startIndex = rkyenIndex;
+            while (startIndex > 0 && cleanText.charAt(startIndex - 1) != ' ') {
+                startIndex--;
+            }
+            return cleanText.substring(startIndex, rkyenIndex + 5); // Include རྐྱེན།
+        }
+
+        // Method 2: Extract first Tibetan word ending with །
+        String[] words = cleanText.split("\\s+");
+        for (String word : words) {
+            if (word.matches(".*[\\u0F00-\\u0FFF]+།")) {
+                System.out.println("  -> Found completion marker: '" + word + "'");
+                return word;
+            }
+        }
+
+        // Method 3: Take first Tibetan syllable as completion
+        for (String word : words) {
+            if (containsTibetan(word)) {
+                System.out.println("  -> Using first Tibetan word as completion: '" + word + "'");
+                return word;
+            }
+        }
+
+        return "";
     }
 }
