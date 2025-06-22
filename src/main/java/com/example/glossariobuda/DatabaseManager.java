@@ -1,7 +1,6 @@
 package com.example.glossariobuda;
 
 import java.sql.*;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -43,8 +42,8 @@ public class DatabaseManager {
         }
     }
     
-    public void addTerm(String sourceTerm, String sourceLanguage, String targetTerm, 
-                       String targetLanguage, String context, String contributor, String notes) {
+    public boolean addTerm(String sourceTerm, String sourceLanguage, String targetTerm,
+                           String targetLanguage, String context, String contributor, String notes) {
         String sql = """
             INSERT INTO terms (source_term, source_language, target_term, target_language, 
                              context, contributor, notes) 
@@ -63,6 +62,7 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+        return true;
     }
     
     public List<Term> searchTerms(String searchText) {

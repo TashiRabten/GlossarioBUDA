@@ -1,11 +1,11 @@
 package com.example.glossariobuda;
 
 import net.sourceforge.tess4j.Tesseract;
-import net.sourceforge.tess4j.TesseractException;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.text.PDFTextStripper;
 
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -18,487 +18,518 @@ import java.util.regex.Pattern;
 public class OCRProcessor {
     private final Tesseract tesseract;
     private final DatabaseManager dbManager;
-    
+    private static final boolean DEBUG = true;
+
     public OCRProcessor(DatabaseManager dbManager) {
         this.dbManager = dbManager;
         this.tesseract = new Tesseract();
         setupTesseract();
     }
-    
-    private void setupTesseract() {
-        // Configure Tesseract for Tibetan text recognition
-        // Try bundled tessdata first, then fallback to system installation
-        String bundledPath = System.getProperty("user.dir") + "/tessdata";
-        String systemPath = "C:\\Program Files\\Tesseract-OCR\\tessdata";
-        
-        if (new File(bundledPath).exists()) {
-            tesseract.setDatapath(bundledPath);
-        } else if (new File(systemPath).exists()) {
-            tesseract.setDatapath(systemPath);
-        } else {
-            // Let Tesseract use default path
-            System.out.println("Warning: Using default Tesseract path. OCR may not work properly.");
+
+    private void debug(String message) {
+        if (DEBUG) {
+            System.out.println("[OCR DEBUG] " + message);
         }
-        
-        // Check if language files exist and configure accordingly
-        String dataPath = systemPath; // Use system path for checking files
-        
-        boolean hasEnglish = new File(dataPath, "eng.traineddata").exists();
-        boolean hasTibetan = new File(dataPath, "bod.traineddata").exists();
-        
-        if (hasEnglish && hasTibetan) {
-            tesseract.setLanguage("eng+bod"); // English + Tibetan
-            System.out.println("OCR configured for English + Tibetan");
-        } else if (hasEnglish) {
-            tesseract.setLanguage("eng"); // English only
-            System.out.println("OCR configured for English only (Tibetan language pack not found)");
-        } else if (hasTibetan) {
-            tesseract.setLanguage("bod"); // Tibetan only
-            System.out.println("OCR configured for Tibetan only (English language pack not found)");
-        } else {
-            // Fallback to default language
-            System.out.println("Warning: No language packs found. Using default OCR settings.");
-            System.out.println("Please install Tesseract language packs:");
-            System.out.println("- eng.traineddata (English)");
-            System.out.println("- bod.traineddata (Tibetan)");
-            System.out.println("Download from: https://github.com/tesseract-ocr/tessdata");
-        }
-        
-        // Use LSTM engine only (more compatible)
-        tesseract.setOcrEngineMode(1); // LSTM engine only (avoid legacy engine issues)
-        tesseract.setPageSegMode(3); // Fully automatic page segmentation
-        tesseract.setVariable("user_defined_dpi", "300");
-        tesseract.setVariable("preserve_interword_spaces", "1");
-        
-        // Additional error handling variables
-        tesseract.setVariable("debug_file", "NUL"); // Suppress debug output on Windows
     }
-    
-    public List<String> processPDF(String pdfPath, ProgressCallback callback) {
-        List<String> extractedText = new ArrayList<>();
-        String previousPageEndText = ""; // Store incomplete text from previous page
-        
-        try (PDDocument document = Loader.loadPDF(new File(pdfPath))) {
-            PDFRenderer pdfRenderer = new PDFRenderer(document);
-            int totalPages = document.getNumberOfPages();
-            
-            if (callback != null) {
-                callback.onProgress(0, totalPages, "Iniciando processamento OCR...");
+
+    private void setupTesseract() {
+        debug("Setting up Tesseract...");
+
+        String tessDataPath = findTessDataPath();
+        if (tessDataPath != null) {
+            tesseract.setDatapath(tessDataPath);
+            debug("Tesseract data path: " + tessDataPath);
+        }
+
+        try {
+            tesseract.setLanguage("eng+bod");
+            debug("Language set to: eng+bod");
+        } catch (Exception e) {
+            debug("Failed to set eng+bod, trying eng only: " + e.getMessage());
+            try {
+                tesseract.setLanguage("eng");
+                debug("Language set to: eng");
+            } catch (Exception ex) {
+                debug("Using default language");
             }
-            
-            for (int page = 0; page < totalPages; page++) {
+        }
+
+        tesseract.setOcrEngineMode(1);
+        tesseract.setPageSegMode(6);
+        tesseract.setVariable("user_defined_dpi", "400");
+        tesseract.setVariable("preserve_interword_spaces", "1");
+
+        // Remove character whitelist to test Tibetan recognition
+        // tesseract.setVariable("tessedit_char_whitelist", "...");
+
+        debug("Tesseract configured");
+    }
+
+    private String findTessDataPath() {
+        String[] paths = {
+            System.getProperty("user.dir") + "/tessdata",
+            "C:\\Program Files\\Tesseract-OCR\\tessdata",
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+            "/usr/local/share/tessdata",
+            "/opt/homebrew/share/tessdata"
+        };
+
+        for (String path : paths) {
+            if (new File(path).exists()) {
+                debug("Found tessdata at: " + path);
+                return path;
+            }
+        }
+
+        debug("Warning: No tessdata path found");
+        return null;
+    }
+
+    public List<String> processPDF(String pdfPath, ProgressCallback callback) {
+        debug("=== Starting PDF Processing ===");
+        debug("PDF Path: " + pdfPath);
+
+        List<String> extractedText = new ArrayList<>();
+
+        try (PDDocument document = Loader.loadPDF(new File(pdfPath))) {
+            debug("PDF loaded. Pages: " + document.getNumberOfPages());
+
+            // Phase 1: Try direct text extraction
+            if (callback != null) {
+                callback.onProgress(0, 1, "Attempting direct text extraction...");
+            }
+
+            PDFTextStripper stripper = new PDFTextStripper();
+            String directText = stripper.getText(document);
+            debug("Direct text extraction length: " + directText.length());
+
+            if (hasValidGlossaryStructure(directText)) {
+                debug("Direct text extraction successful - processing...");
+                if (callback != null) {
+                    callback.onProgress(1, 1, "Processing direct text extraction...");
+                }
+
+                processExtractedText(directText);
+
+                if (callback != null) {
+                    callback.onComplete("Direct text extraction successful!");
+                }
+                extractedText.add(directText);
+                return extractedText;
+            }
+
+            debug("Direct text extraction failed - falling back to OCR");
+
+            // Phase 2: OCR fallback
+            PDFRenderer renderer = new PDFRenderer(document);
+            int totalPages = document.getNumberOfPages();
+
+            if (callback != null) {
+                callback.onProgress(0, totalPages, "Text extraction failed, using OCR...");
+            }
+
+            // Process more pages to reach main glossary (starts around page 25+)
+            int pagesToProcess = Math.min(totalPages, 35);
+            for (int page = 0; page < pagesToProcess; page++) {
+                debug("=== Processing page " + (page + 1) + " ===");
+
+                if (callback != null) {
+                    callback.onProgress(page + 1, totalPages, "OCR page " + (page + 1));
+                }
+
                 try {
-                    BufferedImage bufferedImage = pdfRenderer.renderImageWithDPI(page, 300, ImageType.RGB);
-                    
-                    if (callback != null) {
-                        callback.onProgress(page + 1, totalPages, 
-                            "Processando página " + (page + 1) + " de " + totalPages);
-                    }
-                    
-                    String pageText;
-                    try {
-                        pageText = tesseract.doOCR(bufferedImage);
-                        if (pageText == null || pageText.trim().isEmpty()) {
-                            pageText = "[Empty page or OCR failed]";
-                        }
-                    } catch (Exception ocrError) {
-                        pageText = "[OCR Error: " + ocrError.getMessage() + "]";
-                        if (callback != null) {
-                            callback.onError("OCR error on page " + (page + 1) + ": " + ocrError.getMessage());
-                        }
-                    }
+                    BufferedImage image = renderer.renderImageWithDPI(page, 400, ImageType.RGB);
+                    String pageText = tesseract.doOCR(image);
                     extractedText.add(pageText);
-                    
-                    // Handle cross-page text reconstruction
-                    String processedText = handleCrossPageText(previousPageEndText, pageText, page + 1);
-                    
-                    // Extract incomplete text at end of this page for next iteration
-                    previousPageEndText = extractIncompleteTextAtPageEnd(pageText);
-                    
-                    // Process the reconstructed text for terms
-                    processPageText(processedText, page + 1);
-                    
+
+                    debug("Raw OCR text length: " + pageText.length());
+                    if (pageText.length() > 0) {
+                        String preview = pageText.substring(0, Math.min(200, pageText.length()));
+                        debug("OCR Preview: " + preview.replaceAll("\\n", "\\\\n"));
+                    }
+
+                    // Process this page for terms
+                    processPageForTerms(pageText, page + 1);
+
                 } catch (Exception e) {
-                    String errorMsg = "Erro OCR na página " + (page + 1) + ": " + e.getMessage();
-                    extractedText.add("[ERRO: " + errorMsg + "]");
+                    String errorMsg = "OCR error on page " + (page + 1) + ": " + e.getMessage();
+                    debug("OCR Error: " + errorMsg);
+                    extractedText.add("[ERROR: " + errorMsg + "]");
                     if (callback != null) {
                         callback.onError(errorMsg);
                     }
-                    previousPageEndText = ""; // Reset on error
                 }
             }
-            
-            // Process any remaining incomplete text from the last page
-            if (!previousPageEndText.trim().isEmpty()) {
-                processPageText(previousPageEndText, totalPages);
-            }
-            
+
             if (callback != null) {
-                callback.onComplete("OCR completo! Processadas " + totalPages + " páginas.");
+                callback.onComplete("OCR processing complete");
             }
-            
+
         } catch (IOException e) {
-            String errorMsg = "Erro ao processar PDF: " + e.getMessage();
+            String errorMsg = "PDF processing error: " + e.getMessage();
+            debug("PDF Error: " + errorMsg);
             if (callback != null) {
                 callback.onError(errorMsg);
             }
         }
-        
+
         return extractedText;
     }
-    
-    private void processPageText(String pageText, int pageNumber) {
-        // Extract page header information first
-        String pageHeader = extractPageHeader(pageText);
-        
-        // Extract terms with improved pattern matching
-        List<TermPair> terms = extractTermsFromText(pageText);
-        
-        for (TermPair term : terms) {
-            // Enhanced context with page header and subject information
-            String context = "Página " + pageNumber + " via OCR";
-            if (pageHeader != null && !pageHeader.isEmpty()) {
-                context += " | " + pageHeader;
-            }
-            if (term.context != null && !term.context.isEmpty()) {
-                context += " | " + term.context;
-            }
-            
-            dbManager.addTerm(
-                term.sourceTerm,
-                term.sourceLanguage,
-                term.targetTerm,
-                term.targetLanguage,
-                context,
-                "OCR-Bot",
-                "Necessita revisão manual"
-            );
+
+    private boolean hasValidGlossaryStructure(String text) {
+        if (text == null || text.length() < 1000) {
+            debug("Text too short for glossary: " + (text != null ? text.length() : "null"));
+            return false;
+        }
+
+        boolean hasEnglish = text.matches(".*[a-zA-Z]{3,}.*");
+        boolean hasTibetan = text.matches(".*[\\u0F00-\\u0FFF].*");
+        boolean hasStructure = text.split("\\n").length > 10;
+
+        debug("Glossary structure check - English: " + hasEnglish + ", Tibetan: " + hasTibetan + ", Structure: " + hasStructure);
+
+        return hasEnglish && hasTibetan && hasStructure;
+    }
+
+    private void processExtractedText(String fullText) {
+        debug("Processing direct text extraction...");
+        String[] pages = splitIntoPages(fullText);
+        debug("Split into " + pages.length + " pages");
+
+        for (int i = 0; i < pages.length; i++) {
+            processPageText(pages[i], i + 1);
         }
     }
-    
-    private List<TermPair> extractTermsFromText(String text) {
-        List<TermPair> terms = new ArrayList<>();
-        
-        // Pattern 1: Multi-line English terms with Tibetan
-        // Example: "clean bill of    𝑥𝑥     གསོ་བའི་དོན། གཞན་གྱི་སྐུ་ཚབ་དང་བཅས་པའི།"
-        //          "health                  ཚོད་འཛིན། མི་འཁྲུག་གི་གསོ་བའི་དོན།"
-        Pattern multilinePattern = Pattern.compile(
-            "([a-zA-Z][a-zA-Z\\s]+?)\\s+([𝑥𝑥a-zA-Z*]+)\\s+([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།\\r\\n]+?)(?=\\n[a-zA-Z]|\\n\\s*\\n|$)",
-            Pattern.MULTILINE | Pattern.DOTALL
-        );
-        
-        Matcher matcher = multilinePattern.matcher(text);
-        while (matcher.find()) {
-            String englishPart1 = matcher.group(1).trim();
-            String marker = matcher.group(2).trim();
-            String tibetanBlock = matcher.group(3).trim();
-            
-            // Look for additional English words on the next line
-            String[] lines = tibetanBlock.split("\\r?\\n");
-            String englishTerm = englishPart1;
-            StringBuilder tibetanText = new StringBuilder();
-            
-            for (String line : lines) {
-                line = line.trim();
-                if (line.matches("^[a-zA-Z][a-zA-Z\\s]*$")) {
-                    // This line contains English text - add to term
-                    englishTerm += " " + line;
-                } else if (line.matches(".*[\\u0F00-\\u0FFF].*")) {
-                    // This line contains Tibetan text
-                    if (tibetanText.length() > 0) tibetanText.append(" ");
-                    tibetanText.append(line);
-                }
-            }
-            
-            String finalTibetan = tibetanText.toString().replaceAll("[།\\s]+$", "").trim();
-            String finalEnglish = englishTerm.trim();
-            String context = "Marker: " + marker;
-            
-            if (!finalEnglish.isEmpty() && !finalTibetan.isEmpty()) {
-                terms.add(new TermPair(
-                    finalEnglish, "English",
-                    finalTibetan, "Tibetan",
-                    context
-                ));
-            }
-        }
-        
-        // Pattern 2: Single-line format with *subject*
-        // Example: "absent *psycho* མི་མཚམས་པའི། དབུ་མའི་རྣམ་པ་བཞི་དང་དབྱེ་བ།"
-        Pattern singlelinePattern = Pattern.compile(
-            "([a-zA-Z][a-zA-Z\\s]+?)\\s+\\*([a-zA-Z]+)\\*\\s+([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།]+)",
-            Pattern.MULTILINE | Pattern.DOTALL
-        );
-        
-        matcher = singlelinePattern.matcher(text);
-        while (matcher.find()) {
-            String englishTerm = matcher.group(1).trim();
-            String subject = matcher.group(2).trim();
-            String tibetanText = matcher.group(3).trim();
-            
-            tibetanText = tibetanText.replaceAll("[།\\s]+$", "").trim();
-            String context = "Subject: " + subject;
-            
-            // Avoid duplicates from multiline pattern
-            final String finalEnglishTerm = englishTerm;
-            final String finalTibetanText = tibetanText;
-            boolean isDuplicate = terms.stream().anyMatch(term -> 
-                term.sourceTerm.equals(finalEnglishTerm) && term.targetTerm.equals(finalTibetanText)
-            );
-            
-            if (!englishTerm.isEmpty() && !tibetanText.isEmpty() && !isDuplicate) {
-                terms.add(new TermPair(
-                    englishTerm, "English",
-                    tibetanText, "Tibetan",
-                    context
-                ));
-            }
-        }
-        
-        return terms;
-    }
-    
-    private String extractPageHeader(String pageText) {
-        // Pattern to extract page header: "dictionary term + spaces + page number"
-        // Example: "absolute pressure                                   4"
-        Pattern headerPattern = Pattern.compile(
-            "^([a-zA-Z][a-zA-Z\\s]+?)\\s+([\\d]+)\\s*$",
-            Pattern.MULTILINE
-        );
-        
-        // Also look for headers with separator lines
-        Pattern headerWithSeparatorPattern = Pattern.compile(
-            "^([a-zA-Z][a-zA-Z\\s]+?)\\s+([\\d]+)\\s*\\n[─\\-_═]{3,}",
-            Pattern.MULTILINE
-        );
-        
-        Matcher matcher = headerWithSeparatorPattern.matcher(pageText);
-        if (matcher.find()) {
-            String term = matcher.group(1).trim();
-            String pageNum = matcher.group(2).trim();
-            return "Header: " + term + " (p." + pageNum + ")";
-        }
-        
-        // Fallback to simple header pattern
-        matcher = headerPattern.matcher(pageText);
-        if (matcher.find()) {
-            String term = matcher.group(1).trim();
-            String pageNum = matcher.group(2).trim();
-            
-            // Validate this looks like a header (reasonable term length)
-            if (term.length() > 3 && term.length() < 50) {
-                return "Header: " + term + " (p." + pageNum + ")";
-            }
-        }
-        
-        return null;
-    }
-    
-    private String handleCrossPageText(String previousPageEnd, String currentPageText, int pageNumber) {
-        if (previousPageEnd.trim().isEmpty()) {
-            return currentPageText;
-        }
-        
-        // Look for continuation at the beginning of current page (after header)
-        String currentPageStart = extractTextAfterHeader(currentPageText);
-        
-        // Try to reconstruct broken terms
-        String reconstructed = reconstructBrokenTerms(previousPageEnd, currentPageStart);
-        
-        // If reconstruction found a complete term, remove the broken parts and add the complete term
-        if (reconstructed != null && !reconstructed.isEmpty()) {
-            // Remove the incomplete start from current page and prepend the reconstructed term
-            String cleanedCurrentPage = removeIncompleteStart(currentPageText);
-            return reconstructed + "\n" + cleanedCurrentPage;
-        }
-        
-        // No reconstruction possible, just return current page
-        return currentPageText;
-    }
-    
-    private String extractIncompleteTextAtPageEnd(String pageText) {
-        String[] lines = pageText.split("\\r?\\n");
-        StringBuilder incompleteText = new StringBuilder();
-        
-        // Look at last few lines to see if they contain incomplete terms
-        for (int i = Math.max(0, lines.length - 3); i < lines.length; i++) {
-            String line = lines[i].trim();
-            
-            // Check if line looks incomplete (English without Tibetan, or Tibetan without context)
-            if (isIncompleteEnglishTerm(line) || isIncompleteTibetanText(line)) {
-                if (incompleteText.length() > 0) incompleteText.append("\n");
-                incompleteText.append(line);
-            }
-        }
-        
-        return incompleteText.toString();
-    }
-    
-    private String extractTextAfterHeader(String pageText) {
-        // Remove header and separator lines to get main content
-        String[] lines = pageText.split("\\r?\\n");
-        StringBuilder content = new StringBuilder();
-        boolean headerPassed = false;
-        
+
+    private String[] splitIntoPages(String fullText) {
+        List<String> pages = new ArrayList<>();
+        String[] lines = fullText.split("\\n");
+        StringBuilder currentPage = new StringBuilder();
+
         for (String line : lines) {
-            if (!headerPassed) {
-                // Skip header lines and separator lines
-                if (line.matches("^[a-zA-Z][a-zA-Z\\s]+\\s+\\d+\\s*$") || 
-                    line.matches("^[─\\-_═]{3,}.*")) {
-                    headerPassed = true;
-                    continue;
+            if (isPageBreak(line)) {
+                if (currentPage.length() > 0) {
+                    pages.add(currentPage.toString());
+                    currentPage = new StringBuilder();
                 }
             } else {
-                // Take first few lines after header
-                if (content.length() > 200) break; // Limit to avoid too much text
-                if (content.length() > 0) content.append("\n");
-                content.append(line);
+                currentPage.append(line).append("\\n");
             }
         }
-        
-        return content.toString();
+
+        if (currentPage.length() > 0) {
+            pages.add(currentPage.toString());
+        }
+
+        return pages.toArray(new String[0]);
     }
-    
-    private String reconstructBrokenTerms(String pageEnd, String pageStart) {
-        String[] endLines = pageEnd.split("\\r?\\n");
-        String[] startLines = pageStart.split("\\r?\\n");
-        
-        if (endLines.length == 0 || startLines.length == 0) return null;
-        
-        // Try to combine incomplete English terms
-        String lastEndLine = endLines[endLines.length - 1].trim();
-        String firstStartLine = startLines[0].trim();
-        
-        // Case 1: English term split across pages
-        if (isIncompleteEnglishTerm(lastEndLine) && isIncompleteEnglishTerm(firstStartLine)) {
-            // Look for Tibetan text in following lines
-            StringBuilder tibetanText = new StringBuilder();
-            for (int i = 1; i < Math.min(startLines.length, 5); i++) {
-                if (startLines[i].matches(".*[\\u0F00-\\u0FFF].*")) {
-                    if (tibetanText.length() > 0) tibetanText.append(" ");
-                    tibetanText.append(startLines[i].trim());
+
+    private boolean isPageBreak(String line) {
+        return line.matches("^\\s*\\d+\\s*$") ||
+               line.matches(".*absolute pressure.*\\d+") ||
+               (line.length() < 5 && line.matches("\\s*"));
+    }
+
+    private void processPageText(String pageText, int pageNumber) {
+        debug("Processing page " + pageNumber + " text (direct extraction)");
+        List<TermPair> terms = extractTermsFromText(pageText);
+        debug("Extracted " + terms.size() + " terms from page " + pageNumber);
+
+        for (TermPair term : terms) {
+            saveTermPair(term, pageNumber, "Text extraction");
+        }
+    }
+
+    private void processPageForTerms(String pageText, int pageNumber) {
+        debug("=== Processing page " + pageNumber + " for terms ===");
+
+        if (pageText == null || pageText.trim().isEmpty()) {
+            debug("Page text is empty");
+            return;
+        }
+
+        List<TermPair> terms = extractTermsFromPage(pageText);
+        debug("Found " + terms.size() + " potential terms on page " + pageNumber);
+
+        for (TermPair term : terms) {
+            debug("Term: '" + term.englishTerm + "' -> '" + term.tibetanTerm + "' [" + term.subject + "]");
+            saveTermPair(term, pageNumber, "OCR extracted");
+        }
+    }
+
+    private List<TermPair> extractTermsFromPage(String pageText) {
+        List<TermPair> terms = new ArrayList<>();
+        String cleanedText = cleanOCRText(pageText);
+
+        debug("Cleaned text preview: " + cleanedText.substring(0, Math.min(300, cleanedText.length())));
+
+        // Use line-by-line column parser for proper 4-column separation
+        List<LineByLineColumnParser.TermBuilder> parsedTerms = LineByLineColumnParser.parseColumns(cleanedText);
+        for (LineByLineColumnParser.TermBuilder builder : parsedTerms) {
+            if (builder.isComplete() && isValidTerm(builder.englishTerm, builder.tibetanTerm)) {
+                TermPair termPair = new TermPair(builder.englishTerm, builder.tibetanTerm, builder.subject, builder.tibetanDefinition);
+                terms.add(termPair);
+                debug("✓ Line-parsed: " + builder.englishTerm + " [" + builder.subject + "] -> " + builder.tibetanTerm);
+                if (!builder.tibetanDefinition.trim().isEmpty()) {
+                    debug("    Definition: " + builder.tibetanDefinition.substring(0, Math.min(50, builder.tibetanDefinition.length())) + "...");
                 }
             }
-            
-            if (tibetanText.length() > 0) {
-                String completeEnglish = lastEndLine + " " + firstStartLine;
-                return completeEnglish + "   " + tibetanText.toString();
+        }
+
+        // Pattern 1: Main glossary format - English + Subject + Tibetan (per Feedback.txt)
+        Pattern mainGlossaryPattern = Pattern.compile(
+            "^([a-zA-Z][a-zA-Z\\s-']+?)\\s+" +           // English term (e.g., "abiotic factor")
+            "([a-z]{2,6})\\s+" +                         // Subject code (e.g., "bot", "psycho")
+            "([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།]*)", // Tibetan text
+            Pattern.MULTILINE
+        );
+        
+        // Pattern 2: Abbreviations format - abbrev. FullTerm Tibetan (pages 18-22)
+        Pattern abbreviationsPattern = Pattern.compile(
+            "^([a-zA-Z]+\\.)\\s+" +                      // Abbreviation (e.g., "acc.", "chem.")
+            "([A-Za-z][A-Za-z\\s-']+?)\\s+" +           // Full English term (e.g., "Accountancy")
+            "([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།]*)", // Tibetan text
+            Pattern.MULTILINE
+        );
+
+        // Try main glossary pattern first
+        Matcher matcher = mainGlossaryPattern.matcher(cleanedText);
+        while (matcher.find()) {
+            String englishTerm = cleanEnglishTerm(matcher.group(1));
+            String subject = matcher.group(2);
+            String tibetanTerm = cleanTibetanTerm(matcher.group(3));
+
+            if (isValidTerm(englishTerm, tibetanTerm)) {
+                terms.add(new TermPair(englishTerm, tibetanTerm, subject));
+                debug("Main glossary match: " + englishTerm + " [" + subject + "] -> " + tibetanTerm);
             }
         }
         
-        // Case 2: Tibetan text split across pages
-        if (isIncompleteTibetanText(lastEndLine) && isIncompleteTibetanText(firstStartLine)) {
-            // Look back for English term
-            String englishTerm = "";
-            for (int i = endLines.length - 2; i >= Math.max(0, endLines.length - 5); i--) {
-                if (endLines[i].matches("^[a-zA-Z][a-zA-Z\\s]*$")) {
-                    englishTerm = endLines[i].trim();
-                    break;
+        // Try abbreviations pattern
+        matcher = abbreviationsPattern.matcher(cleanedText);
+        while (matcher.find()) {
+            String abbreviation = matcher.group(1);
+            String fullTerm = cleanEnglishTerm(matcher.group(2));
+            String tibetanTerm = cleanTibetanTerm(matcher.group(3));
+
+            if (isValidTerm(fullTerm, tibetanTerm)) {
+                terms.add(new TermPair(fullTerm, tibetanTerm, "abbrev"));
+                debug("Abbreviation match: " + abbreviation + " = " + fullTerm + " -> " + tibetanTerm);
+            }
+        }
+
+        // Pattern 2: Handle OCR failures - English + Subject + Garbled text
+        // This is what was working before for cases like "table"
+        Pattern ocrFailurePattern = Pattern.compile(
+            "^([a-zA-Z][a-zA-Z\\s-']+?)\\s+" +           // English term
+            "([a-z]+(?:,\\s*[a-z]+)*)\\s+" +             // Subject codes
+            "([A-Za-z0-9\\s]{5,})",                       // Garbled text (OCR failed Tibetan)
+            Pattern.MULTILINE
+        );
+
+        matcher = ocrFailurePattern.matcher(cleanedText);
+        while (matcher.find()) {
+            String englishTerm = cleanEnglishTerm(matcher.group(1));
+            String subjects = matcher.group(2);
+            String garbledText = matcher.group(3).trim();
+
+            // Create placeholder for failed Tibetan OCR
+            String tibetanPlaceholder = "[Tibetan OCR failed: " +
+                garbledText.substring(0, Math.min(20, garbledText.length())) + "...]";
+
+            if (isValidEnglishTerm(englishTerm)) {
+                terms.add(new TermPair(englishTerm, tibetanPlaceholder, subjects));
+                debug("OCR failure match: " + englishTerm + " [" + subjects + "] -> " + tibetanPlaceholder);
+            }
+        }
+
+        // Pattern 3: Multi-line terms
+        Pattern multilinePattern = Pattern.compile(
+            "([a-zA-Z][a-zA-Z\\s-']+?)\\s*\\n" +         // First line English
+            "([a-zA-Z][a-zA-Z\\s-']*?)\\s+" +            // Second line English
+            "([a-z]+(?:,\\s*[a-z]+)*)\\s+" +             // Subject codes
+            "([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།]*)", // Tibetan text
+            Pattern.MULTILINE
+        );
+
+        matcher = multilinePattern.matcher(cleanedText);
+        while (matcher.find()) {
+            String englishPart1 = cleanEnglishTerm(matcher.group(1));
+            String englishPart2 = cleanEnglishTerm(matcher.group(2));
+            String subjects = matcher.group(3);
+            String tibetanTerm = cleanTibetanTerm(matcher.group(4));
+
+            String fullEnglishTerm = (englishPart1 + " " + englishPart2).trim();
+
+            if (isValidTerm(fullEnglishTerm, tibetanTerm)) {
+                terms.add(new TermPair(fullEnglishTerm, tibetanTerm, subjects));
+                debug("Multi-line match: " + fullEnglishTerm + " [" + subjects + "] -> " + tibetanTerm);
+            }
+        }
+
+        return terms;
+    }
+
+    private List<TermPair> extractTermsFromText(String text) {
+        List<TermPair> terms = new ArrayList<>();
+
+        Pattern termPattern = Pattern.compile(
+            "([a-zA-Z][a-zA-Z\\s-']+?)\\s+" +              // English term
+            "([a-z]+(?:[.,]\\s*[a-z]+)*)\\s+" +            // Subject codes
+            "([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།]*)", // Tibetan text
+            Pattern.MULTILINE
+        );
+
+        Matcher matcher = termPattern.matcher(text);
+        while (matcher.find()) {
+            String englishTerm = cleanEnglishTerm(matcher.group(1));
+            String subjects = matcher.group(2);
+            String tibetanTerm = cleanTibetanTerm(matcher.group(3));
+
+            if (isValidTerm(englishTerm, tibetanTerm)) {
+                terms.add(new TermPair(englishTerm, tibetanTerm, subjects));
+            }
+        }
+
+        return terms;
+    }
+
+    private String cleanOCRText(String text) {
+        return text
+                .replaceAll("^\\d+\\s*$", "")
+                .replaceAll("[─━═-]{3,}", "")
+                .replaceAll("\\s{3,}", " ")
+                .replaceAll("\\n{3,}", "\\n\\n")
+                .trim();
+    }
+
+    private String cleanEnglishTerm(String term) {
+        return term.trim()
+                .replaceAll("\\s+", " ")
+                .replaceAll("^[^a-zA-Z]+|[^a-zA-Z\\s'-]+$", "")
+                .toLowerCase();
+    }
+
+    private String cleanTibetanTerm(String term) {
+        return term.trim()
+                .replaceAll("\\s+", " ")
+                .replaceAll("[།]{2,}$", "།")
+                .trim();
+    }
+
+    private boolean isValidTerm(String englishTerm, String tibetanTerm) {
+        if (englishTerm == null || tibetanTerm == null) return false;
+        if (englishTerm.length() < 2 || tibetanTerm.length() < 2) return false;
+        if (englishTerm.length() > 100) return false;
+
+        // Allow placeholders for failed OCR
+        if (!tibetanTerm.matches(".*[\\u0F00-\\u0FFF].*") &&
+            !tibetanTerm.startsWith("[Tibetan OCR failed")) return false;
+
+        if (!englishTerm.matches("[a-zA-Z][a-zA-Z\\s'-]*")) return false;
+
+        return true;
+    }
+
+    private boolean isValidEnglishTerm(String englishTerm) {
+        if (englishTerm == null || englishTerm.trim().isEmpty()) return false;
+
+        englishTerm = englishTerm.trim().toLowerCase();
+
+        if (englishTerm.length() < 2 || englishTerm.length() > 50) return false;
+        if (!englishTerm.matches("[a-zA-Z][a-zA-Z\\s'-]*")) return false;
+
+        // Skip obvious document words
+        String[] skipWords = {"abbreviations", "glossary", "terms", "page", "tibetan"};
+        for (String skip : skipWords) {
+            if (englishTerm.equals(skip)) return false;
+        }
+
+        return true;
+    }
+
+    private void saveTermPair(TermPair term, int pageNumber, String method) {
+        try {
+            String context = "Page " + pageNumber + " (" + method + ")";
+            if (term.subject != null && !term.subject.isEmpty()) {
+                context += " | Subject: " + term.subject;
+            }
+
+            // Include Tibetan definition in notes field
+            String notes = "Requires manual review";
+            if (term.tibetanDefinition != null && !term.tibetanDefinition.trim().isEmpty()) {
+                notes = "Definition: " + term.tibetanDefinition.trim();
+                if (notes.length() > 200) {
+                    notes = notes.substring(0, 200) + "...";
                 }
             }
-            
-            if (!englishTerm.isEmpty()) {
-                String completeTibetan = lastEndLine + " " + firstStartLine;
-                return englishTerm + "   " + completeTibetan;
+
+            boolean success = dbManager.addTerm(
+                term.englishTerm,
+                "English",
+                term.tibetanTerm,
+                "Tibetan",
+                context,
+                "OCR-Bot",
+                notes
+            );
+
+            if (success) {
+                debug("✓ Saved: " + term.englishTerm + " -> " + term.tibetanTerm);
+                if (!term.tibetanDefinition.isEmpty()) {
+                    debug("    Definition: " + term.tibetanDefinition.substring(0, Math.min(50, term.tibetanDefinition.length())) + "...");
+                }
+            } else {
+                debug("✗ Failed to save: " + term.englishTerm);
             }
+        } catch (Exception e) {
+            debug("✗ Error saving term: " + e.getMessage());
         }
-        
-        return null;
     }
-    
-    private String removeIncompleteStart(String pageText) {
-        String[] lines = pageText.split("\\r?\\n");
-        StringBuilder cleaned = new StringBuilder();
-        boolean foundComplete = false;
-        
-        for (String line : lines) {
-            if (!foundComplete && (isIncompleteEnglishTerm(line) || isIncompleteTibetanText(line))) {
-                continue; // Skip incomplete start lines
-            }
-            foundComplete = true;
-            if (cleaned.length() > 0) cleaned.append("\n");
-            cleaned.append(line);
-        }
-        
-        return cleaned.toString();
-    }
-    
-    private boolean isIncompleteEnglishTerm(String line) {
-        // English line without Tibetan text and looks like it could continue
-        return line.matches("^[a-zA-Z][a-zA-Z\\s]*$") && 
-               !line.matches(".*[\\u0F00-\\u0FFF].*") &&
-               line.length() > 2 && line.length() < 30;
-    }
-    
-    private boolean isIncompleteTibetanText(String line) {
-        // Tibetan text that seems incomplete (no proper ending punctuation)
-        return line.matches(".*[\\u0F00-\\u0FFF].*") && 
-               !line.matches(".*[།]\\s*$") &&
-               line.length() > 3;
-    }
-    
-    private void processTermWithContext(String englishTerm, String tibetanTerm, String context) {
-        // This method can be used to add terms with richer context information
-        // Currently just for internal processing, actual DB insertion happens in processPageText
-    }
-    
-    private String detectLanguage(String text) {
-        // Simple language detection based on character patterns
-        if (text.matches(".*[àáâãäèéêëìíîïòóôõöùúûüç].*")) {
-            return "Portuguese";
-        } else if (text.matches(".*[a-zA-Z].*")) {
-            return "English";
-        }
-        return "Unknown";
-    }
-    
-    private boolean containsTibetan(String text) {
-        return text.matches(".*[\\u0F00-\\u0FFF].*");
-    }
-    
+
     public String processSinglePage(String pdfPath, int pageNumber) {
         try (PDDocument document = Loader.loadPDF(new File(pdfPath))) {
             PDFRenderer pdfRenderer = new PDFRenderer(document);
-            
+
             if (pageNumber >= document.getNumberOfPages()) {
-                return "Página " + pageNumber + " não existe no documento.";
+                return "Page " + pageNumber + " does not exist.";
             }
-            
-            BufferedImage bufferedImage = pdfRenderer.renderImageWithDPI(pageNumber, 300, ImageType.RGB);
+
+            BufferedImage bufferedImage = pdfRenderer.renderImageWithDPI(pageNumber, 400, ImageType.RGB);
             return tesseract.doOCR(bufferedImage);
-            
+
         } catch (Exception e) {
-            return "Erro ao processar página " + pageNumber + ": " + e.getMessage();
+            return "Error processing page " + pageNumber + ": " + e.getMessage();
         }
     }
-    
+
     public void setTesseractDataPath(String dataPath) {
         tesseract.setDatapath(dataPath);
     }
-    
+
     public interface ProgressCallback {
         void onProgress(int current, int total, String message);
         void onError(String error);
         void onComplete(String message);
     }
-    
+
     private static class TermPair {
-        final String sourceTerm;
-        final String sourceLanguage;
-        final String targetTerm;
-        final String targetLanguage;
-        final String context;
-        
-        TermPair(String sourceTerm, String sourceLanguage, String targetTerm, String targetLanguage) {
-            this(sourceTerm, sourceLanguage, targetTerm, targetLanguage, null);
+        final String englishTerm;
+        final String tibetanTerm;
+        final String subject;
+        String tibetanDefinition = ""; // 4th column - Tibetan definition
+
+        TermPair(String englishTerm, String tibetanTerm, String subject) {
+            this.englishTerm = englishTerm;
+            this.tibetanTerm = tibetanTerm;
+            this.subject = subject;
         }
         
-        TermPair(String sourceTerm, String sourceLanguage, String targetTerm, String targetLanguage, String context) {
-            this.sourceTerm = sourceTerm;
-            this.sourceLanguage = sourceLanguage;
-            this.targetTerm = targetTerm;
-            this.targetLanguage = targetLanguage;
-            this.context = context;
+        TermPair(String englishTerm, String tibetanTerm, String subject, String tibetanDefinition) {
+            this.englishTerm = englishTerm;
+            this.tibetanTerm = tibetanTerm;
+            this.subject = subject;
+            this.tibetanDefinition = tibetanDefinition != null ? tibetanDefinition : "";
         }
     }
 }

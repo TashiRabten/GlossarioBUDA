@@ -46,8 +46,8 @@
             <HBox alignment="CENTER_LEFT" spacing="10.0">
                <children>
                   <Button fx:id="addTermButton" onAction="#showAddTermDialog" text="➕ Adicionar" />
-                  <Button fx:id="editButton" onAction="#editSelectedTerm" text="✏️ Editar" />
-                  <Button fx:id="deleteButton" onAction="#deleteSelectedTerm" text="🗑️ Deletar" />
+                  <Button fx:id="editButton" onAction="#editSelectedTerm" text="✏ Editar" />
+                  <Button fx:id="deleteButton" onAction="#deleteSelectedTerm" text="🗑 Deletar" />
                   <Button fx:id="exportButton" onAction="#showExportDialog" text="📤 WhatsApp" />
                   <Button fx:id="ocrButton" onAction="#showOCRDialog" text="📄 OCR" />
                   <Button fx:id="recentButton" onAction="#showRecentTerms" text="🕐 Recentes" />

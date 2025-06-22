@@ -349,35 +349,38 @@ public class GlossarioController implements Initializable {
         
         return grid;
     }
-    
+
     private void processOCR(String pdfPath) {
-        statusLabel.setText("Processando OCR... Isso pode demorar alguns minutos.");
-        
-        Thread ocrThread = new Thread(() -> {
-            ocrProcessor.processPDF(pdfPath, new OCRProcessor.ProgressCallback() {
+        statusLabel.setText("Processando texto/OCR... Isso pode demorar alguns minutos.");
+
+        Thread extractionThread = new Thread(() -> {
+            // Try the hybrid approach first
+            HybridTextExtractor hybridExtractor = new HybridTextExtractor(dbManager);
+
+            hybridExtractor.processPDF(pdfPath, new HybridTextExtractor.ProgressCallback() {
                 @Override
                 public void onProgress(int current, int total, String message) {
                     Platform.runLater(() -> statusLabel.setText(message));
                 }
-                
+
                 @Override
                 public void onError(String error) {
-                    Platform.runLater(() -> statusLabel.setText("Erro OCR: " + error));
+                    Platform.runLater(() -> statusLabel.setText("Erro: " + error));
                 }
-                
+
                 @Override
                 public void onComplete(String message) {
                     Platform.runLater(() -> {
                         statusLabel.setText(message);
-                        showAlert("OCR Completo", message);
-                        showRecentTerms(); // Show newly added terms
+                        showAlert("Processamento Completo", message);
+                        showRecentTerms();
                     });
                 }
             });
         });
-        
-        ocrThread.setDaemon(true);
-        ocrThread.start();
+
+        extractionThread.setDaemon(true);
+        extractionThread.start();
     }
     
     private void showExportResult(String exportText) {
