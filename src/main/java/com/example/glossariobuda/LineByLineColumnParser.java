@@ -44,7 +44,30 @@ public class LineByLineColumnParser {
                 expectingCompletion ? "(INCOMPLETE)" : "");
         }
     }
-    
+
+    private static void debugPrintSpaces(String line) {
+        StringBuilder sb = new StringBuilder();
+        int spaceRun = 0;
+
+        for (char c : line.toCharArray()) {
+            if (c == ' ') {
+                spaceRun++;
+            } else {
+                if (spaceRun > 0) {
+                    sb.append("␣".repeat(spaceRun));  // use ␣ to visualize spaces
+                    spaceRun = 0;
+                }
+                sb.append(c);
+            }
+        }
+        if (spaceRun > 0) {
+            sb.append("␣".repeat(spaceRun));
+        }
+
+        System.out.println("[SPACE VISUAL] " + sb.toString());
+    }
+
+
     public static List<TermBuilder> parseColumns(String ocrText) {
         System.out.println("[PARSER] Starting line-by-line column parsing");
         
@@ -54,7 +77,7 @@ public class LineByLineColumnParser {
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i].trim();
             if (line.isEmpty()) continue;
-            
+
             System.out.println("[LINE " + i + "] Processing: " + line);
             
             // Parse this line and either create new term or append to existing
@@ -64,25 +87,25 @@ public class LineByLineColumnParser {
         System.out.println("[PARSER] Found " + terms.size() + " terms");
         return terms;
     }
-    
+
+
     private static void processLine(String line, List<TermBuilder> terms) {
-        // Step 1: Check if line starts with English (new term)
-        if (startsWithEnglish(line)) {
+        System.out.println("[PROCESS] Processing: " + line);
+        debugPrintSpaces(line); // Optional: prints positions of space groups
+
+        TermBuilder newTerm = parseNewTermLine(line);
+        if (newTerm.hasEnglish()) {
             System.out.println("  -> NEW TERM detected");
-            TermBuilder newTerm = parseNewTermLine(line);
-            if (newTerm.hasEnglish()) {
-                terms.add(newTerm);
-                System.out.println("  -> Added: " + newTerm);
-            }
+            terms.add(newTerm);
+            System.out.println("  -> Added: " + newTerm);
+        } else if (!terms.isEmpty()) {
+            System.out.println("  -> CONTINUATION line");
+            appendToLastTerm(line, terms.get(terms.size() - 1));
         } else {
-            // Step 2: This is a continuation line, append to last term
-            if (!terms.isEmpty()) {
-                System.out.println("  -> CONTINUATION line");
-                appendToLastTerm(line, terms.get(terms.size() - 1));
-            }
+            System.out.println("  -> LINE IGNORED: No valid English term or previous entry");
         }
     }
-    
+
     private static TermBuilder parseNewTermLine(String line) {
         TermBuilder term = new TermBuilder();
         
@@ -164,78 +187,171 @@ public class LineByLineColumnParser {
     private static List<Integer> findColumnBoundaries(String line) {
         List<Integer> boundaries = new ArrayList<>();
         
-        // Look for sequences of 3+ spaces (column separators)
-        boolean inSpace = false;
-        int spaceStart = -1;
-        int spaceCount = 0;
+        System.out.println("  -> Analyzing line for column boundaries: " + line);
         
+        // Method 1: Try to find patterns based on character transitions
+        // Look for English -> Subject code -> Tibetan transitions
+        
+        // Find first English word end
+        int firstWordEnd = -1;
         for (int i = 0; i < line.length(); i++) {
-            char c = line.charAt(i);
-            
-            if (c == ' ') {
-                if (!inSpace) {
-                    inSpace = true;
-                    spaceStart = i;
-                    spaceCount = 1;
-                } else {
-                    spaceCount++;
+            if (line.charAt(i) == ' ' && firstWordEnd == -1) {
+                // Look ahead to see if next part looks like another English word or subject code
+                String nextPart = "";
+                int j = i + 1;
+                while (j < line.length() && line.charAt(j) != ' ') {
+                    nextPart += line.charAt(j);
+                    j++;
                 }
-            } else {
-                if (inSpace && spaceCount >= 3) {
-                    // Found a column boundary
-                    boundaries.add(spaceStart);
+                
+                // If next part looks like a subject code (2-6 lowercase letters)
+                if (nextPart.matches("^[a-z]{2,6}$") || nextPart.matches("^[a-z]+,[a-z]+$")) {
+                    firstWordEnd = i;
+                    boundaries.add(i);
+                    System.out.println("    -> Found English/Subject boundary at: " + i + " (next: '" + nextPart + "')");
+                    
+                    // Find subject code end
+                    int subjectEnd = j;
+                    if (subjectEnd < line.length()) {
+                        boundaries.add(subjectEnd);
+                        System.out.println("    -> Found Subject/Tibetan boundary at: " + subjectEnd);
+                    }
+                    break;
                 }
-                inSpace = false;
-                spaceCount = 0;
             }
         }
         
+        // Method 2: If no clear subject code found, look for English -> Tibetan transition
+        if (boundaries.isEmpty()) {
+            for (int i = 0; i < line.length(); i++) {
+                char c = line.charAt(i);
+                if (c >= '\u0F00' && c <= '\u0FFF') {
+                    // Found first Tibetan character, look backwards for space
+                    for (int j = i - 1; j >= 0; j--) {
+                        if (line.charAt(j) == ' ') {
+                            boundaries.add(j);
+                            System.out.println("    -> Found English/Tibetan boundary at: " + j);
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        
+        // Method 3: Fallback - look for any spaces that might be column separators
+        if (boundaries.isEmpty()) {
+            boolean inSpace = false;
+            int spaceStart = -1;
+            int spaceCount = 0;
+            
+            for (int i = 0; i < line.length(); i++) {
+                char c = line.charAt(i);
+                
+                if (c == ' ') {
+                    if (!inSpace) {
+                        inSpace = true;
+                        spaceStart = i;
+                        spaceCount = 1;
+                    } else {
+                        spaceCount++;
+                    }
+                } else {
+                    if (inSpace && spaceCount >= 1) { // Reduced from 3 to 1
+                        boundaries.add(spaceStart);
+                        System.out.println("    -> Found space boundary at: " + spaceStart + " (count: " + spaceCount + ")");
+                    }
+                    inSpace = false;
+                    spaceCount = 0;
+                }
+            }
+        }
+        
+        System.out.println("  -> Final boundaries: " + boundaries);
         return boundaries;
     }
     
     private static String[] splitTibetanContent(String tibetanText) {
         String cleaned = tibetanText.trim();
+        System.out.println("  -> Splitting Tibetan content: " + cleaned.substring(0, Math.min(50, cleaned.length())) + "...");
         
-        // Method 1: Look for རྐྱེན། pattern
+        // Method 1: Look for རྐྱེན། pattern - this is the key completion marker
         int rkyenIndex = cleaned.indexOf("རྐྱེན།");
-        if (rkyenIndex > 0) {
-            String beforeRkyen = cleaned.substring(0, rkyenIndex);
-            String afterRkyen = cleaned.substring(rkyenIndex + 5).trim();
+        if (rkyenIndex >= 0) {
+            System.out.println("  -> Found རྐྱེན། at position: " + rkyenIndex);
             
-            String[] words = beforeRkyen.trim().split("\\s+");
-            if (words.length >= 1) {
-                String lastWord = words[words.length - 1];
-                if (lastWord.endsWith("པའི་") || lastWord.endsWith("པའེ་")) {
-                    String term = lastWord + "རྐྱེན།";
-                    String definition = "";
-                    if (words.length > 1) {
-                        definition = String.join(" ", java.util.Arrays.copyOfRange(words, 0, words.length - 1)) + " ";
+            // Find the term that should end with རྐྱེན།
+            // Look for pattern: "word ending with པའི་/པའེ་/བའི་/བའེ་" + "རྐྱེན།"
+            String beforeRkyen = cleaned.substring(0, rkyenIndex);
+            String afterRkyen = cleaned.substring(rkyenIndex + 5).trim(); // 5 = length of "རྐྱེན།"
+            
+            System.out.println("  -> Before རྐྱེན།: '" + beforeRkyen + "'");
+            System.out.println("  -> After རྐྱེན།: '" + afterRkyen.substring(0, Math.min(30, afterRkyen.length())) + "...'");
+            
+            // Find the word that should be completed with རྐྱེན།
+            String[] beforeWords = beforeRkyen.trim().split("\\s+");
+            for (int i = beforeWords.length - 1; i >= 0; i--) {
+                String word = beforeWords[i];
+                if (word.endsWith("པའི་") || word.endsWith("པའེ་") || 
+                    word.endsWith("བའི་") || word.endsWith("བའེ་") ||
+                    word.endsWith("མིན་པའེ་") || word.endsWith("མིན་པའི་")) {
+                    
+                    // This word + རྐྱེན། forms the complete term
+                    String completeTerm = word + "རྐྱེན།";
+                    
+                    // Everything else is definition
+                    String definitionPart = "";
+                    if (i > 0) {
+                        definitionPart = String.join(" ", java.util.Arrays.copyOfRange(beforeWords, 0, i)) + " ";
                     }
-                    definition += afterRkyen;
-                    return new String[]{term, definition.trim()};
+                    definitionPart += afterRkyen;
+                    
+                    System.out.println("  -> Completed term: '" + completeTerm + "'");
+                    System.out.println("  -> Definition: '" + definitionPart.substring(0, Math.min(30, definitionPart.length())) + "...'");
+                    
+                    return new String[]{completeTerm, definitionPart.trim()};
                 }
+            }
+            
+            // Fallback: if no clear completion pattern, take last word + རྐྱེན།
+            if (beforeWords.length > 0) {
+                String lastWord = beforeWords[beforeWords.length - 1];
+                String completeTerm = lastWord + "རྐྱེན།";
+                String definitionPart = "";
+                if (beforeWords.length > 1) {
+                    definitionPart = String.join(" ", java.util.Arrays.copyOfRange(beforeWords, 0, beforeWords.length - 1)) + " ";
+                }
+                definitionPart += afterRkyen;
+                
+                System.out.println("  -> Fallback term: '" + completeTerm + "'");
+                return new String[]{completeTerm, definitionPart.trim()};
             }
         }
         
-        // Method 2: Split on first shad
+        // Method 2: Split on first shad (།) - common punctuation marker
         int firstShad = cleaned.indexOf('།');
         if (firstShad > 0 && firstShad < cleaned.length() - 1) {
             String term = cleaned.substring(0, firstShad + 1).trim();
             String definition = cleaned.substring(firstShad + 1).trim();
             
-            if (term.length() >= 3 && term.length() <= 30) {
+            // Validate term length is reasonable
+            if (term.length() >= 3 && term.length() <= 50 && definition.length() > 5) {
+                System.out.println("  -> Split on shad: '" + term + "' | '" + definition.substring(0, Math.min(30, definition.length())) + "...'");
                 return new String[]{term, definition};
             }
         }
         
-        // Method 3: Take first few words as term
+        // Method 3: Take first few words as term (fallback)
         String[] words = cleaned.split("\\s+");
         if (words.length > 3) {
             String term = String.join(" ", java.util.Arrays.copyOfRange(words, 0, Math.min(3, words.length)));
             String definition = String.join(" ", java.util.Arrays.copyOfRange(words, 3, words.length));
+            System.out.println("  -> Fallback split: '" + term + "' | '" + definition.substring(0, Math.min(30, definition.length())) + "...'");
             return new String[]{term, definition};
         }
         
+        // No split possible
+        System.out.println("  -> No split possible, returning as single term");
         return new String[]{cleaned, ""};
     }
     

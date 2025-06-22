@@ -48,35 +48,72 @@ public class HybridTextExtractor {
                             document.getNumberOfPages() + " pages.");
                 }
             } else {
-                // Fallback to OCR
+                // Fallback to OCR with column detection
                 if (callback != null) {
-                    callback.onProgress(0, 1, "Text extraction failed, falling back to OCR...");
+                    callback.onProgress(0, 1, "Text extraction failed, using OCR with column detection...");
                 }
 
-                // Convert callback interface
-                OCRProcessor.ProgressCallback ocrCallback = new OCRProcessor.ProgressCallback() {
-                    @Override
-                    public void onProgress(int current, int total, String message) {
-                        if (callback != null) callback.onProgress(current, total, message);
-                    }
-                    
-                    @Override
-                    public void onError(String error) {
-                        if (callback != null) callback.onError(error);
-                    }
-                    
-                    @Override
-                    public void onComplete(String message) {
-                        if (callback != null) callback.onComplete(message);
-                    }
-                };
-                
-                ocrFallback.processPDF(pdfPath, ocrCallback);
+                processWithOCRAndColumnDetection(pdfPath, callback);
             }
 
         } catch (IOException e) {
             if (callback != null) {
                 callback.onError("Error processing PDF: " + e.getMessage());
+            }
+        }
+    }
+    
+    private void processWithOCRAndColumnDetection(String pdfPath, ProgressCallback callback) {
+        // Use OCR to extract text, then apply our column detection
+        try {
+            System.out.println("[HYBRID] Starting OCR processing with column detection...");
+            
+            // Get OCR text using the existing OCR processor
+            java.io.File pdfFile = new java.io.File(pdfPath);
+            if (!pdfFile.exists()) {
+                if (callback != null) callback.onError("PDF file not found: " + pdfPath);
+                return;
+            }
+            
+            // Use PDFBox to convert to images and OCR each page
+            try (org.apache.pdfbox.pdmodel.PDDocument document = org.apache.pdfbox.Loader.loadPDF(pdfFile)) {
+                org.apache.pdfbox.rendering.PDFRenderer pdfRenderer = new org.apache.pdfbox.rendering.PDFRenderer(document);
+                
+                for (int pageIndex = 0; pageIndex < document.getNumberOfPages(); pageIndex++) {
+                    if (callback != null) {
+                        callback.onProgress(pageIndex + 1, document.getNumberOfPages(), 
+                            "Processing page " + (pageIndex + 1) + " with OCR and column detection...");
+                    }
+                    
+                    // Convert page to image and OCR it
+                    java.awt.image.BufferedImage image = pdfRenderer.renderImageWithDPI(pageIndex, 300);
+                    
+                    // OCR the image
+                    net.sourceforge.tess4j.Tesseract tesseract = new net.sourceforge.tess4j.Tesseract();
+                    tesseract.setDatapath("C:/Program Files/Tesseract-OCR/tessdata");
+                    tesseract.setLanguage("eng+bod");
+                    
+                    String ocrText = tesseract.doOCR(image);
+                    
+                    System.out.println("[HYBRID] OCR text for page " + (pageIndex + 1) + ": " + 
+                        ocrText.substring(0, Math.min(100, ocrText.length())) + "...");
+                    
+                    // Apply column detection to OCR text
+                    processPageText(ocrText, pageIndex + 1);
+                }
+                
+                if (callback != null) {
+                    callback.onComplete("OCR with column detection completed for " + 
+                        document.getNumberOfPages() + " pages.");
+                }
+                
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[HYBRID] OCR processing failed: " + e.getMessage());
+            e.printStackTrace();
+            if (callback != null) {
+                callback.onError("OCR processing failed: " + e.getMessage());
             }
         }
     }
@@ -141,50 +178,129 @@ public class HybridTextExtractor {
         List<TermPair> terms = extractTermsFromText(pageText);
 
         for (TermPair term : terms) {
-            String context = "Page " + pageNumber + " (Direct extraction)";
+            // Reconstruct single line output with all columns properly formatted
+            String reconstructedLine = reconstructSingleLineOutput(term);
+            
+            String context = "Page " + pageNumber + " (Hybrid Column Detection)";
             if (term.subject != null && !term.subject.isEmpty()) {
                 context += " | Subject: " + term.subject;
             }
+            
+            // Add definition to context if available
+            if (term.tibetanDefinition != null && !term.tibetanDefinition.trim().isEmpty()) {
+                context += " | Definition: " + term.tibetanDefinition;
+            }
 
+            // Store the Tibetan term and definition properly
             dbManager.addTerm(
                     term.englishTerm,
                     "English",
-                    term.tibetanTerm,
+                    term.tibetanTerm,  // Only the term, not the definition
                     "Tibetan",
                     context,
-                    "TextExtractor-Bot",
+                    "HybridColumnDetector-Bot",
                     "Requires manual review"
             );
+            
+            // Output the reconstructed single line for verification
+            System.out.println("[RECONSTRUCTED] " + reconstructedLine);
+            System.out.println("[STORED] " + term.englishTerm + " -> Term: '" + 
+                term.tibetanTerm + "' | Def: '" + 
+                (term.tibetanDefinition.length() > 30 ? term.tibetanDefinition.substring(0, 30) + "..." : term.tibetanDefinition) + "'");
         }
+    }
+    
+    /**
+     * Reconstruct single line output with proper column alignment
+     * Format: [English Term] | [Subject] | [Tibetan Term] | [Tibetan Definition]
+     */
+    private String reconstructSingleLineOutput(TermPair term) {
+        // Ensure consistent formatting with proper spacing
+        String english = term.englishTerm != null ? term.englishTerm.trim() : "";
+        String subject = term.subject != null ? term.subject.trim() : "";
+        String tibetanTerm = term.tibetanTerm != null ? term.tibetanTerm.trim() : "";
+        String tibetanDef = term.tibetanDefinition != null ? term.tibetanDefinition.trim() : "";
+        
+        // Format with column separators for clear visualization
+        StringBuilder line = new StringBuilder();
+        
+        // Column 1: English (pad to ~20 chars for alignment)
+        line.append(String.format("%-20s", english.length() > 20 ? english.substring(0, 17) + "..." : english));
+        line.append(" | ");
+        
+        // Column 2: Subject (pad to ~8 chars)
+        line.append(String.format("%-8s", subject.length() > 8 ? subject.substring(0, 8) : subject));
+        line.append(" | ");
+        
+        // Column 3: Tibetan Term (pad to ~25 chars)
+        String displayTerm = tibetanTerm.length() > 25 ? tibetanTerm.substring(0, 22) + "..." : tibetanTerm;
+        line.append(String.format("%-25s", displayTerm));
+        line.append(" | ");
+        
+        // Column 4: Tibetan Definition (truncate if too long)
+        String displayDef = tibetanDef.length() > 50 ? tibetanDef.substring(0, 47) + "..." : tibetanDef;
+        line.append(displayDef);
+        
+        return line.toString();
     }
 
     private List<TermPair> extractTermsFromText(String text) {
         List<TermPair> terms = new ArrayList<>();
 
-        // Pattern optimized for direct text extraction (cleaner than OCR)
-        Pattern termPattern = Pattern.compile(
-                "([a-zA-Z][a-zA-Z\\s-']+?)\\s+" +              // English term
-                        "([a-z]+(?:[.,]\\s*[a-z]+)*)\\s+" +            // Subject codes
-                        "([\\u0F00-\\u0FFF][\\u0F00-\\u0FFF\\s་།།]+)", // Tibetan text
-                Pattern.MULTILINE
-        );
-
-        Matcher matcher = termPattern.matcher(text);
-        while (matcher.find()) {
-            String englishTerm = matcher.group(1).trim().toLowerCase();
-            String subjects = matcher.group(2);
-            String tibetanTerm = matcher.group(3).trim();
-
-            // Clean up and validate
-            englishTerm = englishTerm.replaceAll("\\s+", " ");
-            tibetanTerm = tibetanTerm.replaceAll("\\s+", " ");
-
-            if (isValidTerm(englishTerm, tibetanTerm)) {
-                terms.add(new TermPair(englishTerm, tibetanTerm, subjects));
+        System.out.println("[HYBRID] Using ColumnDetector for text extraction");
+        
+        // Use the sophisticated ColumnDetector instead of simple regex
+        List<ColumnDetector.ColumnizedTerm> columnizedTerms = ColumnDetector.detectColumns(text);
+        
+        for (ColumnDetector.ColumnizedTerm columnTerm : columnizedTerms) {
+            if (isValidColumnTerm(columnTerm)) {
+                terms.add(new TermPair(
+                    columnTerm.englishTerm, 
+                    columnTerm.tibetanTerm,  // Store only the term, not combined
+                    columnTerm.subject,
+                    columnTerm.tibetanDefinition  // Store definition separately
+                ));
             }
         }
 
+        System.out.println("[HYBRID] ColumnDetector found " + terms.size() + " valid terms");
         return terms;
+    }
+
+    private boolean isValidColumnTerm(ColumnDetector.ColumnizedTerm columnTerm) {
+        if (columnTerm == null) return false;
+        
+        String englishTerm = columnTerm.englishTerm;
+        String tibetanTerm = columnTerm.tibetanTerm;
+        
+        if (englishTerm == null || tibetanTerm == null) return false;
+        if (englishTerm.trim().length() < 2 || tibetanTerm.trim().length() < 2) return false;
+        if (englishTerm.length() > 100) return false; // Too long, probably an error
+
+        // Should contain actual Tibetan characters
+        if (!tibetanTerm.matches(".*[\\u0F00-\\u0FFF].*")) return false;
+
+        // Should be reasonable English words
+        if (!englishTerm.matches("[a-zA-Z][a-zA-Z\\s'-]*")) return false;
+
+        return true;
+    }
+    
+    private String combineTibetanFields(String tibetanTerm, String tibetanDefinition) {
+        StringBuilder combined = new StringBuilder();
+        
+        if (tibetanTerm != null && !tibetanTerm.trim().isEmpty()) {
+            combined.append(tibetanTerm.trim());
+        }
+        
+        if (tibetanDefinition != null && !tibetanDefinition.trim().isEmpty()) {
+            if (combined.length() > 0) {
+                combined.append(" ");
+            }
+            combined.append(tibetanDefinition.trim());
+        }
+        
+        return combined.toString();
     }
 
     private boolean isValidTerm(String englishTerm, String tibetanTerm) {
@@ -211,11 +327,13 @@ public class HybridTextExtractor {
         final String englishTerm;
         final String tibetanTerm;
         final String subject;
+        final String tibetanDefinition;
 
-        TermPair(String englishTerm, String tibetanTerm, String subject) {
+        TermPair(String englishTerm, String tibetanTerm, String subject, String tibetanDefinition) {
             this.englishTerm = englishTerm;
             this.tibetanTerm = tibetanTerm;
             this.subject = subject;
+            this.tibetanDefinition = tibetanDefinition != null ? tibetanDefinition : "";
         }
     }
 }

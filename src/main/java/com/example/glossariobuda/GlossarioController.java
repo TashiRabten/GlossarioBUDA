@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.ResourceBundle;
 
 public class GlossarioController implements Initializable {
-    
+
     @FXML private TextField searchField;
     @FXML private ListView<DatabaseManager.Term> resultsListView;
     @FXML private TextArea detailsArea;
@@ -27,7 +27,7 @@ public class GlossarioController implements Initializable {
     @FXML private Button exportButton;
     @FXML private Button ocrButton;
     @FXML private Button recentButton;
-    
+
     private DatabaseManager dbManager;
     private ExportManager exportManager;
     private OCRProcessor ocrProcessor;
@@ -37,20 +37,20 @@ public class GlossarioController implements Initializable {
         initializeManagers();
         setupEventHandlers();
     }
-    
+
     private void initializeManagers() {
         dbManager = new DatabaseManager();
         exportManager = new ExportManager(dbManager);
         ocrProcessor = new OCRProcessor(dbManager);
     }
-    
+
     private void setupEventHandlers() {
         searchField.setOnKeyReleased(e -> performSearch());
         resultsListView.getSelectionModel().selectedItemProperty().addListener(
-            (obs, oldVal, newVal) -> displayTermDetails(newVal)
+                (obs, oldVal, newVal) -> displayTermDetails(newVal)
         );
     }
-    
+
     @FXML
     private void clearSearch() {
         searchField.clear();
@@ -58,48 +58,55 @@ public class GlossarioController implements Initializable {
         detailsArea.clear();
         statusLabel.setText("Pronto. Digite um termo para buscar.");
     }
-    
+
     @FXML
     private void showAddTermDialog() {
         Dialog<DatabaseManager.Term> dialog = new Dialog<>();
         dialog.setTitle("Adicionar Novo Termo");
         dialog.setHeaderText("Adicione um novo termo ao glossário");
-        
+
         ButtonType addButtonType = new ButtonType("Adicionar", ButtonBar.ButtonData.OK_DONE);
         dialog.getDialogPane().getButtonTypes().addAll(addButtonType, ButtonType.CANCEL);
-        
+
         GridPane grid = createTermEditGrid(null);
         dialog.getDialogPane().setContent(grid);
-        
-        // Get form fields
+
         TextField sourceTermField = (TextField) grid.getChildren().get(1);
         ComboBox<String> sourceLangCombo = (ComboBox<String>) grid.getChildren().get(3);
         TextField targetTermField = (TextField) grid.getChildren().get(5);
         ComboBox<String> targetLangCombo = (ComboBox<String>) grid.getChildren().get(7);
         TextArea contextArea = (TextArea) grid.getChildren().get(9);
         TextField contributorField = (TextField) grid.getChildren().get(11);
-        
+
         dialog.setResultConverter(dialogButton -> {
             if (dialogButton == addButtonType) {
+                String rawTibetan = targetTermField.getText();
+                String tibetanTerm = rawTibetan;
+                String tibetanDefinition = "";
+                if (rawTibetan.contains("།")) {
+                    int cutoff = rawTibetan.indexOf("།") + 1;
+                    tibetanTerm = rawTibetan.substring(0, cutoff).trim();
+                    tibetanDefinition = rawTibetan.substring(cutoff).trim();
+                }
                 dbManager.addTerm(
-                    sourceTermField.getText(),
-                    sourceLangCombo.getValue(),
-                    targetTermField.getText(),
-                    targetLangCombo.getValue(),
-                    contextArea.getText(),
-                    contributorField.getText(),
-                    null
+                        sourceTermField.getText(),
+                        sourceLangCombo.getValue(),
+                        tibetanTerm,
+                        targetLangCombo.getValue(),
+                        tibetanDefinition,
+                        contributorField.getText(),
+                        null
                 );
                 statusLabel.setText("Termo adicionado com sucesso!");
-                performSearch(); // Refresh results
+                performSearch();
                 return null;
             }
             return null;
         });
-        
+
         dialog.showAndWait();
     }
-    
+
     @FXML
     private void editSelectedTerm() {
         DatabaseManager.Term selectedTerm = resultsListView.getSelectionModel().getSelectedItem();
