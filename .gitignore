@@ -1,7 +1,11 @@
 target/
-!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+
+### Maven ###
+.mvn/
+mvnw
+mvnw.cmd
 
 ### IntelliJ IDEA ###
 .idea/
@@ -39,13 +43,14 @@ build/
 *.db
 *.sqlite
 *.sqlite3
-terms.db
+src/main/resources/terms.db
 
 # OCR language packs and temp files
+src/main/resources/tessdata/
 tessdata/
 *.traineddata
 
-# PDF source files (large files - optional)
+# PDF source files (large files)
 Tib*.pdf
 *.pdf
 
@@ -55,6 +60,7 @@ temp/
 *.tmp
 *.bak
 *.swp
+*.backup
 
 # Installer build output
 installer/
@@ -65,6 +71,3 @@ installer/
 # Runtime configuration
 config.properties
 secrets.properties
-
-# Module info backup
-module-info.java.backup
