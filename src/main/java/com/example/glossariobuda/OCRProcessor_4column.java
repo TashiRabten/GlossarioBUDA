@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 public class OCRProcessor_4column {
     
     public static class TermEntry {
-        public final String englishTerm;
+        public String englishTerm;
         public final String tibetanTerm;
         public final String tibetanDefinition;
         public final String subject;
