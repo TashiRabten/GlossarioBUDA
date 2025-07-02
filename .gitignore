@@ -1,19 +1,19 @@
+# ========== Java / Maven Build Artifacts ==========
 target/
 !**/src/main/**/target/
 !**/src/test/**/target/
-
-### Maven ###
 .mvn/
 mvnw
 mvnw.cmd
 
-### IntelliJ IDEA ###
+# ========== IDE Configs ==========
+# IntelliJ
 .idea/
 *.iws
 *.iml
 *.ipr
 
-### Eclipse ###
+# Eclipse
 .apt_generated
 .classpath
 .factorypath
@@ -22,7 +22,7 @@ mvnw.cmd
 .springBeans
 .sts4-cache
 
-### NetBeans ###
+# NetBeans
 /nbproject/private/
 /nbbuild/
 /dist/
@@ -32,42 +32,80 @@ build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 
-### VS Code ###
+# VS Code
 .vscode/
 
-### Mac OS ###
+# ========== macOS ==========
 .DS_Store
 
-### GlossarioBUDA Specific ###
+# ========== GlossarioBUDA Specific ==========
 # Database files
 *.db
 *.sqlite
 *.sqlite3
 src/main/resources/terms.db
 
-# OCR language packs and temp files
+# OCR language packs and trained models
 src/main/resources/tessdata/
 tessdata/
 *.traineddata
 
-# PDF source files (large files)
+# PDF & document source files (inputs)
 Tib*.pdf
 *.pdf
+*.png
+*.tiff
+*.docx
+*.doc
 
-# Application logs and temp
+# Logs and temp
 logs/
 temp/
 *.tmp
 *.bak
 *.swp
 *.backup
+*.log
 
-# Installer build output
+# Installer outputs
 installer/
 *.exe
 *.msi
 *.dmg
 
-# Runtime configuration
+# Runtime configs
 config.properties
 secrets.properties
+
+# ========== Python Specific ==========
+# Bytecode and cache
+*.pyc
+__pycache__/
+
+# Compiled artifacts
+*.pkl
+*.npz
+*.so
+*.c
+*.cpp
+
+# Model and test backups
+*.backup*
+
+# OCR test/output files
+*.tif
+*.zip
+*.rtf
+*.txt
+ocr_output.txt
+test_output.txt
+full_test_output.txt
+debug_output.txt
+properly_fixed_output.txt
+
+# Data folders (raw/test files)
+data/
+edit_distance_tests/
+install_windows/
+
+# ========== End ==========
