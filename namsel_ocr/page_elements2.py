@@ -7,6 +7,7 @@
 
 import cv2 as cv
 import numpy as np
+from PIL import Image
 from sklearn.mixture import GaussianMixture as GMM
 #import font_detector
 from scipy.stats import mode as statsmode
@@ -42,10 +43,11 @@ import platform
 
 class TshegPreprocessor:
     def __init__(self, tsek_mean=5.0, tsek_std=1.0, use_ml=False, model_path=None):
+
         self.tsek_mean = tsek_mean
         self.tsek_std = tsek_std
         self.use_ml = use_ml and ML_AVAILABLE
-        
+
         # Initialize ML separator if requested and available
         if self.use_ml:
             try:
@@ -157,6 +159,7 @@ class TshegPreprocessor:
         split_contours = []
 
         for i, contour in enumerate(contours):
+            print(f"[ENTER split merged components] method_name with {len(contours)} contours")
             x, y, w, h = cv.boundingRect(contour)
             area = w * h
 
@@ -418,6 +421,7 @@ class PageElements(object):
 #         self.cached_features = {}
 #         self.cached_pred_prob = {}
         self.cached_features = OrderedDict()
+
         self.cached_pred_prob = OrderedDict()
 #         self.low_ink = True 
 #        if page_type == 'pecha':
@@ -677,6 +681,15 @@ class PageElements(object):
             # DEBUG: Print classification details
             print(f"[CHAR DEBUG] Character {i}: classified as class {mxinx} = '{quick_prd}' (confidence: {prprob[0][mxinx]:.3f})")
             
+            # DEBUG: For first character (184), show top 5 predictions
+            if i == 184:
+                top5_indices = np.argsort(prprob[0])[-5:][::-1]  # Top 5 highest probabilities
+                print(f"[DETAILED] Character 184 top predictions:")
+                for rank, class_idx in enumerate(top5_indices):
+                    char = label_chars.get(class_idx, f"class_{class_idx}")
+                    conf = prprob[0][class_idx]
+                    print(f"[DETAILED]   {rank+1}. Class {class_idx} = '{char}' (confidence: {conf:.3f})")
+            
             # DEBUG: Track good classifications specifically
             if prprob[0][mxinx] > 0.8:  # High confidence characters
                 print(f"[GOOD CHAR] Character {i}: HIGH CONFIDENCE '{quick_prd}' ({prprob[0][mxinx]:.3f}) - should appear in final output!")
@@ -898,31 +911,28 @@ class PageElements(object):
             if not (5 <= h <= 50 and 3 <= w <= 40 and 15 <= w*h <= 2000):
                 continue
                 
-            try:
-                # Extract contour image for classification
-                contour_img = self._extract_contour_image(i)
-                if contour_img is not None:
-                    # Use original feature extraction for now
-                    # Pass debug information for organized naming
-                    cbox = self.get_boxes()[i]
-                    debug_pos = f"x{cbox[0]}_y{cbox[1]}"
-                    features = normalize_and_extract_features(contour_img, debug_source=self.flpath, debug_char_idx=i, debug_position=debug_pos)
-                    
-                    # TODO: Enable enhanced features after training new classifier
-                    # features = extract_enhanced_features(contour_img)
-                    # if features is None:
-                    #     features = normalize_and_extract_features(contour_img)
-                    if features is not None:
-                        # Quick classification to check if it's Tibetan
-                        prediction = self.fast_cls.predict([features])[0]
-                        
-                        # Check if it's a Tibetan character (not punctuation/noise)
-                        if self._is_tibetan_character_prediction(prediction):
-                            tibetan_heights.append(h)
-                            
-            except:
-                # Skip problematic contours
-                continue
+            # COMMENTED OUT: Problematic character extraction using wrong coordinates
+            # This extraction uses get_boxes() which has wrong coordinate system
+            # segment.py has the correct coordinate extraction - let it handle character processing
+            
+            # For now, use simple heuristic to estimate Tibetan character heights
+            # instead of OCR classification (which was using wrong coordinates)
+            if 10 <= h <= 35 and 5 <= w <= 25:  # Typical Tibetan character dimensions
+                tibetan_heights.append(h)
+            
+            # Original OCR-based approach (commented out due to coordinate issues):
+            # try:
+            #     contour_img = self._extract_contour_image(i)
+            #     if contour_img is not None:
+            #         cbox = self.get_boxes()[i]
+            #         debug_pos = f"x{cbox[0]}_y{cbox[1]}"
+            #         features = normalize_and_extract_features(contour_img, debug_source=self.flpath, debug_char_idx=i, debug_position=debug_pos)
+            #         if features is not None:
+            #             prediction = self.fast_cls.predict([features])[0]
+            #             if self._is_tibetan_character_prediction(prediction):
+            #                 tibetan_heights.append(h)
+            # except:
+            #     continue
         
         # Calculate text scale from actual Tibetan character heights
         if tibetan_heights:
@@ -1146,140 +1156,11 @@ class PageElements(object):
         
         print(f"[IMG DEBUG] After preprocessing: shape={img_copy.shape}, dtype={img_copy.dtype}, max={img_copy.max()}")
             
-        # SCALE-ADAPTIVE AND CONTRAST-ADAPTIVE THRESHOLDING
-        img_height, img_width = img_copy.shape
-        img_area = img_height * img_width
-        
-        # Estimate character scale from image dimensions and content density
-        # Use a quick initial threshold to detect character sizes
-        quick_thresh = cv.adaptiveThreshold(img_copy, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                          cv.THRESH_BINARY_INV, 11, 2)
-        quick_contours = cv.findContours(quick_thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)[-2]
-        
-        if len(quick_contours) > 0:
-            # Calculate median character dimensions from quick detection
-            quick_boxes = [cv.boundingRect(c) for c in quick_contours]
-            # Filter out very small noise and very large merged components (scale-adaptive)
-            min_char_area = max(10, int(img_area * 0.0001))  # 0.01% of image area
-            max_char_area = img_area // 4  # 25% of image area
-            filtered_boxes = [box for box in quick_boxes 
-                            if min_char_area <= box[2] * box[3] <= max_char_area]
-            
-            if len(filtered_boxes) > 0:
-                heights = [box[3] for box in filtered_boxes]
-                widths = [box[2] for box in filtered_boxes]
-                median_height = np.median(heights)
-                median_width = np.median(widths)
-                
-                # Store adaptive character stats for later use in fragment filtering
-                self._adaptive_char_stats = (median_height, median_width)
-                
-                # Scale-adaptive block size calculation
-                # Larger characters need larger blocks to avoid fragmentation
-                if median_height >= 20:  # Large characters
-                    char_scale_factor = 2.2  # Much larger blocks for large chars
-                elif median_height >= 12:  # Medium characters
-                    char_scale_factor = 1.8  # Larger blocks for medium chars  
-                else:  # Small characters
-                    char_scale_factor = 0.7  # Smaller blocks for small chars
-                adaptive_block_size = int(median_height * char_scale_factor)
-                
-                # Ensure block size is odd and within reasonable bounds (scale-adaptive)
-                min_block_size = max(7, int(median_height * 0.5))  # At least 50% of char height
-                max_block_size = min(51, int(median_height * 3.0))  # At most 3x char height
-                adaptive_block_size = max(min_block_size, min(max_block_size, adaptive_block_size))
-                if adaptive_block_size % 2 == 0:
-                    adaptive_block_size += 1
-                
-                # Base C parameter calculation (density-adaptive)
-                char_density = len(filtered_boxes) / img_area * 10000  # chars per 10k pixels
-                base_c = max(1, min(8, int(2 + char_density * 0.5)))
-                
-                # Scale-adaptive C reduction for larger characters
-                if median_height >= 20:  # Large characters
-                    size_c_reduction = 5  # Much lower C to reduce fragmentation
-                elif median_height >= 12:  # Medium characters
-                    size_c_reduction = 4  # Lower C to reduce fragmentation
-                else:  # Small characters
-                    size_c_reduction = 0  # Normal C
-                
-                # CONTRAST-ADAPTIVE THRESHOLDING: Analyze character-level contrast
-                # Analyze contrast around detected character regions
-                character_contrasts = []
-                low_contrast_chars = 0
-                
-                for box in filtered_boxes:
-                    x, y, w, h = box
-                    # Use thresholding-scale regions for contrast analysis
-                    # This matches the scale at which adaptive thresholding operates
-                    padding = adaptive_block_size // 2  # Half the block size as padding
-                    x1 = max(0, x - padding)
-                    y1 = max(0, y - padding)
-                    x2 = min(img_width, x + w + padding)
-                    y2 = min(img_height, y + h + padding)
-                    
-                    char_region = img_copy[y1:y2, x1:x2]
-                    if char_region.size > 0:
-                        std_contrast = np.std(char_region.astype(np.float32))
-                        character_contrasts.append(std_contrast)
-                        
-                        # Check if this character is in a low-contrast region
-                        if std_contrast < 55.0:  # Empirical threshold based on our analysis
-                            low_contrast_chars += 1
-                
-                # Calculate contrast statistics
-                if character_contrasts:
-                    median_char_contrast = np.median(character_contrasts)
-                    min_char_contrast = np.min(character_contrasts)
-                    
-                    print(f"[CONTRAST ANALYSIS] Character regions: {len(character_contrasts)}")
-                    print(f"[CONTRAST ANALYSIS] Median contrast: {median_char_contrast:.1f}, min: {min_char_contrast:.1f}")
-                    print(f"[CONTRAST ANALYSIS] Low-contrast characters: {low_contrast_chars}/{len(character_contrasts)}")
-                    
-                    # Apply contrast compensation if we have low-contrast characters
-                    if low_contrast_chars > 0 or min_char_contrast < 45.0:
-                        # Detected low-contrast characters - apply aggressive contrast compensation
-                        if min_char_contrast < 35.0:
-                            contrast_c_reduction = 3  # Very low contrast
-                        elif min_char_contrast < 45.0:
-                            contrast_c_reduction = 2  # Low contrast
-                        else:
-                            contrast_c_reduction = 1  # Mild contrast issues
-                        
-                        print(f"[CONTRAST ADAPTIVE] Low contrast detected (min: {min_char_contrast:.1f}), applying C reduction: -{contrast_c_reduction}")
-                    else:
-                        contrast_c_reduction = 0
-                        print(f"[CONTRAST ADAPTIVE] Good contrast detected, no adjustment needed")
-                else:
-                    contrast_c_reduction = 0
-                    median_char_contrast = 50.0  # Default
-                
-                # Final adaptive C parameter
-                final_adaptive_c = max(1, base_c - size_c_reduction - contrast_c_reduction)
-                
-                print(f"[ADAPTIVE THRESHOLD] Image: {img_width}x{img_height}, {len(filtered_boxes)} chars")
-                print(f"[ADAPTIVE THRESHOLD] Median char: {median_width:.1f}x{median_height:.1f}")
-                print(f"[ADAPTIVE THRESHOLD] Block size: {adaptive_block_size} (factor: {char_scale_factor})")
-                print(f"[ADAPTIVE THRESHOLD] C: {final_adaptive_c} (base: {base_c}, size_reduction: -{size_c_reduction}, contrast_reduction: -{contrast_c_reduction})")
-                
-                bin_img = cv.adaptiveThreshold(img_copy, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                             cv.THRESH_BINARY_INV, adaptive_block_size, final_adaptive_c)
-            else:
-                # Fallback to scale-adaptive default if no valid characters detected
-                fallback_block_size = max(7, min(21, int(min(img_height, img_width) * 0.05)))  # 5% of smaller dimension
-                if fallback_block_size % 2 == 0:
-                    fallback_block_size += 1
-                print(f"[ADAPTIVE THRESHOLD] No valid chars detected, using scale-adaptive fallback {fallback_block_size}x{fallback_block_size}, C=2")
-                bin_img = cv.adaptiveThreshold(img_copy, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                             cv.THRESH_BINARY_INV, fallback_block_size, 2)
-        else:
-            # Fallback to scale-adaptive default if no contours detected
-            fallback_block_size = max(7, min(21, int(min(img_height, img_width) * 0.05)))  # 5% of smaller dimension
-            if fallback_block_size % 2 == 0:
-                fallback_block_size += 1
-            print(f"[ADAPTIVE THRESHOLD] No contours detected, using scale-adaptive fallback {fallback_block_size}x{fallback_block_size}, C=2")
-            bin_img = cv.adaptiveThreshold(img_copy, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                         cv.THRESH_BINARY_INV, fallback_block_size, 2)
+        # HYBRID APPROACH: Use 95% simple thresholding while keeping size-smart preprocessing
+        # Simple adaptive thresholding (from 95% version) to preserve syllable integrity
+        bin_img = cv.adaptiveThreshold(img_copy, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                      cv.THRESH_BINARY_INV, 11, 2)
+        print(f"[PAGE DEBUG] Using 95% simple adaptive thresholding - preserving syllable integrity")
 
         # Get initial contours
         result = cv.findContours(bin_img, mode=self._contour_mode,
@@ -1289,24 +1170,13 @@ class PageElements(object):
         else:
             _, contours, hierarchy = result
         
-        # Debug original contours (temporarily disabled)
-        # print(f"[INITIAL CONTOURS DEBUG] Found {len(contours)} original contours:")
-        # for i, contour in enumerate(contours):
-        #     x, y, w, h = cv.boundingRect(contour)
-        #     area = w * h
-        #     print(f"[INITIAL CONTOURS DEBUG] Contour {i}: box=({x},{y},{w},{h}), area={area}")
-        
-        # DISABLE syllable merging temporarily - causes feature corruption
-        print(f"[PAGE DEBUG] Preserving original {len(contours)} contours - merging causes feature corruption")
+        # DISABLE splitting temporarily to preserve complete syllables
+        print(f"[PAGE DEBUG] Preserving original {len(contours)} contours - NO SPLITTING")
         
         # SYLLABLE RECONSTRUCTION: Disabled - merging corrupts character features
         # The architecture is implemented but merging causes feature corruption
         print(f"[SYLLABLE DEBUG] Syllable merging disabled - causes feature corruption")
         self.contour_index_mapping = None
-        # except Exception as e:
-        #     print(f"[SYLLABLE DEBUG] Merging failed: {e}, using original contours")
-        #     # Fall back to original contours if merging fails
-        #     self.contour_index_mapping = None
         
         # Adaptive position filtering: analyze document layout first
         filtered_contours = []
@@ -1318,6 +1188,10 @@ class PageElements(object):
         
         for i, contour in enumerate(contours):
             x, y, w, h = cv.boundingRect(contour)
+            # COMMENTED OUT: TEST file creation with wrong coordinates - causes confusion with segment.py
+            # mask = np.zeros_like(self.img_arr, dtype=np.uint8)
+            # cv.drawContours(mask, [contour], -1, color=255, thickness=-1)
+            # Image.fromarray(mask).save(f"TEST_{i}_x{x}_y{y}_w{w}_h{h}.png")
             area = w * h
             
             # print(f"[CONTOUR FILTER DEBUG] Contour {i}: box=({x},{y},{w},{h}), area={area}")
@@ -1342,6 +1216,89 @@ class PageElements(object):
                 pass
         
         print(f"[PAGE DEBUG] After position filtering: {len(filtered_contours)} contours (removed {len(contours) - len(filtered_contours)} vowel marks)")
+        
+        # COMMENTED OUT: Syllable merging implementation - causing problems with other images
+        # This was an attempt to fix syllable fragmentation where སྐྱེ gets split into སྐྱ + ེ
+        # However, it causes issues with other images, so reverting to original behavior
+        """
+        merged_contours = []
+        contour_boxes = [cv.boundingRect(c) for c in filtered_contours]
+        used_indices = set()
+        
+        for i, (contour_i, (x_i, y_i, w_i, h_i)) in enumerate(zip(filtered_contours, contour_boxes)):
+            if i in used_indices:
+                continue
+                
+            # Find all contours that should be merged with this one
+            merge_candidates = [i]
+            
+            for j, (x_j, y_j, w_j, h_j) in enumerate(contour_boxes):
+                if i == j or j in used_indices:
+                    continue
+                
+                # Check if contours should be merged (same syllable)
+                # Only merge if one is much smaller (vowel mark) and they overlap significantly
+                area_i, area_j = w_i * h_i, w_j * h_j
+                is_vowel_mark = (area_j < area_i * 0.3) or (area_i < area_j * 0.3)  # One much smaller
+                
+                # For vowel marks, allow reasonable horizontal distance (not just overlap)
+                horizontal_distance = abs(x_i - x_j)
+                max_horizontal_distance = max(w_i, w_j) * 1.5  # Allow 1.5x the width of larger contour
+                horizontal_ok = horizontal_distance <= max_horizontal_distance
+                
+                vertical_proximity = abs(y_i - y_j) <= max(h_i, h_j) * 0.8   # Stricter vertical distance
+                
+                should_merge = is_vowel_mark and horizontal_ok and vertical_proximity
+                
+                if should_merge:
+                    merge_candidates.append(j)
+                    print(f"[SYLLABLE MERGE] Merging contour {j} with {i}: vowel mark detected, areas: {area_i} vs {area_j}")
+            
+            # Merge all candidates into a single contour
+            if len(merge_candidates) > 1:
+                # Create combined bounding box
+                all_x = [contour_boxes[idx][0] for idx in merge_candidates]
+                all_y = [contour_boxes[idx][1] for idx in merge_candidates]
+                all_x2 = [contour_boxes[idx][0] + contour_boxes[idx][2] for idx in merge_candidates]
+                all_y2 = [contour_boxes[idx][1] + contour_boxes[idx][3] for idx in merge_candidates]
+                
+                min_x, min_y = min(all_x), min(all_y)
+                max_x2, max_y2 = max(all_x2), max(all_y2)
+                combined_w, combined_h = max_x2 - min_x, max_y2 - min_y
+                
+                # Create a merged contour by drawing all parts onto a combined region
+                merged_region = np.zeros((combined_h, combined_w), dtype=np.uint8)
+                for idx in merge_candidates:
+                    cx, cy, cw, ch = contour_boxes[idx]
+                    # Draw each contour at its correct position within the merged region
+                    offset_x, offset_y = cx - min_x, cy - min_y
+                    cv.drawContours(merged_region, [filtered_contours[idx]], -1, 255,
+                                thickness=-1, offset=(-cx + offset_x, -cy + offset_y))
+                    print(f"[MERGE DEBUG] Drawing contour {idx} at offset ({offset_x}, {offset_y}) in merged region")
+                
+                # Find contour of merged region
+                merge_result = cv.findContours(merged_region, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+                if len(merge_result) == 2:
+                    new_contours, _ = merge_result
+                else:
+                    new_contours, _, _ = merge_result
+                
+                if new_contours:
+                    # Adjust contour coordinates back to original image space
+                    merged_contour = new_contours[0] + np.array([min_x, min_y])
+                    merged_contours.append(merged_contour)
+                    print(f"[SYLLABLE MERGE] Created merged contour from {len(merge_candidates)} parts: box=({min_x},{min_y},{combined_w},{combined_h})")
+                
+                # Mark all candidates as used
+                used_indices.update(merge_candidates)
+            else:
+                # Single contour, keep as-is
+                merged_contours.append(contour_i)
+                used_indices.add(i)
+        
+        print(f"[PAGE DEBUG] After syllable merging: {len(merged_contours)} contours (merged {len(filtered_contours) - len(merged_contours)} syllable fragments)")
+        filtered_contours = merged_contours
+        """
         
         # Rebuild hierarchy for filtered contours
         if len(filtered_contours) != len(contours):
@@ -1377,25 +1334,31 @@ class PageElements(object):
             for i, (x, y, w, h) in enumerate(self.boxes[:10]):
                 print(f"[CHAR DEBUG] Char {i}: x={x}, y={y}, w={w}, h={h}")
             
+            # COMMENTED OUT: Character extraction with wrong coordinates - let segment.py handle this
             # Save all character images
-            saved_count = 0
-            for i, (x, y, w, h) in enumerate(self.boxes):
-                try:
-                    char_img = self._extract_contour_image(i)
-                    if char_img is not None and char_img.size > 0:
-                        from PIL import Image
-                        Image.fromarray(char_img.astype(np.uint8)).save(f"debug_extracted_char_{i:03d}.png")
-                        saved_count += 1
-                except Exception as e:
-                    print(f"[CHAR DEBUG] Failed to save character {i}: {e}")
-                    pass
+            # saved_count = 0
+            # for i, (x, y, w, h) in enumerate(self.boxes):
+            #     try:
+            #         char_img = self._extract_contour_image(i)
+            #         if char_img is not None and char_img.size > 0:
+            #             from PIL import Image
+            #             Image.fromarray(char_img.astype(np.uint8)).save(f"debug_extracted_char_{i:03d}.png")
+            #             saved_count += 1
+            #     except Exception as e:
+            #         print(f"[CHAR DEBUG] Failed to save character {i}: {e}")
+            #         pass
             
-            print(f"[CHAR DEBUG] Saved {saved_count}/{len(self.boxes)} character images as debug_extracted_char_XXX.png")
+            # print(f"[CHAR DEBUG] Saved {saved_count}/{len(self.boxes)} character images as debug_extracted_char_XXX.png")
        
         return self.boxes
     
     def _boxes(self):
-        return [cv.boundingRect(c) for c in self.contours]
+        """Calculate bounding boxes - temporarily reverted to see original working heights"""
+        basic_boxes = [cv.boundingRect(c) for c in self.contours]
+        print(f"[BBOX DEBUG] Original working heights:")
+        for i, (x, y, w, h) in enumerate(basic_boxes):
+            print(f"[BBOX DEBUG] Box {i}: ({x},{y},{w}x{h}) - height={h}")
+        return basic_boxes
     
     def get_indices(self):
         if not self.indices:
@@ -1457,8 +1420,9 @@ class PageElements(object):
         # Get bounding boxes for all contours
         contour_data = []
         for i, contour in enumerate(contours):
+            print(f"[ENTER merge syllable contours] method_name with {len(contours)} contours")
             x, y, w, h = cv.boundingRect(contour)
-            area = w * h
+
             contour_data.append({
                 'index': i,
                 'contour': contour,
@@ -1550,6 +1514,7 @@ class PageElements(object):
         # Get bounding boxes for all contours
         contour_data = []
         for i, contour in enumerate(contours):
+            print(f"[ENTER merge with mappings] method_name with {len(contours)} contours")
             x, y, w, h = cv.boundingRect(contour)
             area = w * h
             contour_data.append({
